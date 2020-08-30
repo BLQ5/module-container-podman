@@ -1,0 +1,138 @@
+name: Test
+
+# This workflow will setup an integration test environment
+# - launch webserver at Hetzner Cloud
+# - setup domain DNS at Cloudflare for two domains
+#   - [DOMAIN_NAME].[DOMAIN_SUFFIX]
+#   - sub.[DOMAIN_NAME].[DOMAIN_SUFFIX]
+#
+# This test workflow requires the following environment variables:
+# - SSH_PRIVATE_KEY
+# - CLOUDFLARE_TOKEN
+# - CLOUDFLARE_ZONE
+# - HETZNER_TOKEN
+
+# Also create a label "action/integration-test"
+# Only pull requests with that label will be integration tested
+
+# disable GH action for template
+# remove and uncommment below "on" block when using in production
+on:
+  push:
+    branches-ignore:
+      - '**'
+
+#on:
+#  pull_request:
+#    types: [opened, labeled, unlabeled, synchronize]
+#    branches: [master]
+
+env:
+  # todo: set your role name here
+  ROLE_NAME: <vendor>.stackhead_<type>_<name>
+  # todo: software to use as webserver
+  WEBSERVER: getstackhead.stackhead_webserver_nginx # if your module is a webserver module, set its name here
+  # todo: software to use as container provider
+  CONTAINER: getstackhead.stackhead_container_docker # if your module is a container module, set its name here
+  # todo: adjust domain name
+  DOMAIN_NAME: "pr-${{ github.run_id }}-myname"
+  # domain name
+  DOMAIN_SUFFIX: "test.stackhead.io"
+
+# You should not need to change anything below.
+
+jobs:
+  smoke:
+    name: Smoketest test-tf-generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Ansible v2.10 alpha (GH actions currently uses 2.9)
+        run: ANSIBLE_SKIP_CONFLICT_CHECK=1 pip install --user ansible==2.10.0a9 && ansible --version
+      - name: Get latest StackHead version
+        run: ansible-galaxy collection install git+https://github.com/getstackhead/stackhead.git,next -f
+      - run: ansible-playbook ./__tests__/test-tf-generation.yml
+
+  checkLabel:
+    name: Please request integration test and review
+    needs: smoke
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - run: if [ ${{ contains( github.event.pull_request.labels.*.name, 'action/integration-test') }} == false ]; then exit 1; else exit 0; fi
+  test:
+    name: Integration Test
+    needs: checkLabel
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install Ansible v2.10 alpha (GH actions currently uses 2.9)
+      run: ANSIBLE_SKIP_CONFLICT_CHECK=1 pip install --user ansible==2.10.0a9 && ansible --version
+    - name: Print Ansible version
+      run: ansible --version
+    - uses: webfactory/ssh-agent@v0.2.0
+      with:
+        ssh-private-key: "${{ secrets.SSH_PRIVATE_KEY }}"
+    - name: Setup Hetzner server
+      id: setup_server
+      uses: saitho/hetzner-cloud-action@v1.1.0
+      with:
+        action: create
+        server_name: "${{ env.DOMAIN_NAME }}"
+        server_image: ubuntu-18.04
+        server_location: fsn1
+        server_ssh_key_name: gh-actions
+        wait_for_ssh: 1
+      env:
+        API_TOKEN: ${{ secrets.HETZNER_TOKEN }}
+    - name: Add DNS record
+      uses: saitho/create-dns-record@patch-1
+      with:
+        type: "A"
+        name: "${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}"
+        content: "${{ steps.setup_server.outputs.hcloud_server_created_ipv4 }}"
+        ttl: 1
+        proxied: 0
+        token: "${{ secrets.CLOUDFLARE_TOKEN }}"
+        zone: "${{ secrets.CLOUDFLARE_ZONE }}"
+    - name: Add DNS record for subdomain
+      uses: saitho/create-dns-record@patch-1
+      with:
+        type: "A"
+        name: "sub.${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}"
+        content: "${{ steps.setup_server.outputs.hcloud_server_created_ipv4 }}"
+        ttl: 1
+        proxied: 0
+        token: "${{ secrets.CLOUDFLARE_TOKEN }}"
+        zone: "${{ secrets.CLOUDFLARE_ZONE }}"
+    - uses: getstackhead/stackhead@next
+      with:
+        ipaddress: ${{ steps.setup_server.outputs.hcloud_server_created_ipv4 }}
+        domain: '${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}'
+        domain2: 'sub.${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}'
+        webserver: '${{ env.WEBSERVER }}'
+        container: '${{ env.CONTAINER }}'
+        rolename: '${{ env.ROLE_NAME }}'
+    - name: Remove DNS record
+      uses: saitho/delete-dns-record@saitho-patch-1
+      if: always()
+      with:
+        name: "${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}"
+        token: "${{ secrets.CLOUDFLARE_TOKEN }}"
+        zone: "${{ secrets.CLOUDFLARE_ZONE }}"
+    - name: Remove DNS record for subdomain
+      uses: saitho/delete-dns-record@saitho-patch-1
+      if: always()
+      with:
+        name: "sub.${{ env.DOMAIN_NAME }}.${{ env.DOMAIN_SUFFIX }}"
+        token: "${{ secrets.CLOUDFLARE_TOKEN }}"
+        zone: "${{ secrets.CLOUDFLARE_ZONE }}"
+    - name: Remove Hetzner server
+      uses: saitho/hetzner-cloud-action@v1.1.0
+      if: always()
+      with:
+        action: remove
+        server_id: "${{ steps.setup_server.outputs.hcloud_server_id }}"
+      env:
+        API_TOKEN: ${{ secrets.HETZNER_TOKEN }}

@@ -1,0 +1,14 @@
+---
+- hosts: localhost
+  connection: local
+  vars:
+    stackhead__roles: "~/.ansible/collections/ansible_collections/getstackhead/stackhead/roles"
+  tasks:
+    - include_vars: "{{ stackhead__roles }}/stackhead_module_api/testdata/variables.yml"
+    - block:
+        - debug:
+            msg: "Run your tests here by importing the respective tasks"
+        #- name: Generate Server Block Terraform file
+        #  import_tasks: "../tasks/steps/generate-serverblock-tf.yml"
+      vars:
+        role_path: ".."
