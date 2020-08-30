@@ -1,5 +1,5 @@
 ---
-type: webserver
+type: container
 #terraform:
 #  provider:
 #    name: nginx
